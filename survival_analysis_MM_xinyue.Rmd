@@ -1,0 +1,216 @@
+---
+title: "survival_analysis_MM_xinyue"
+author: "xinyue"
+date: "9/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#load necessary packages
+fun_packages <- function(x){
+  for( i in x ){
+    if( ! require( i , character.only = TRUE ) ){
+      #Si le package ne peut pas être chargé, on l'installe
+      install.packages( i , dependencies = TRUE )
+      #Charger le package après l'installation
+      require( i , character.only = TRUE )
+    }
+    if (!requireNamespace("BiocManager", quietly = TRUE))
+    {install.packages("BiocManager")}
+  }
+}
+
+fun_packages(c("tidyverse","survival","survminer","devtools","org.Hs.eg.db","clusterProfiler","GGally","rms"))
+
+#install.packages("devtools")
+#BiocManager::install("survival")
+#BiocManager::install("survminer")
+#BiocManager::install("GGally")
+#BiocManager::install("rms")
+```
+
+## Load clinical infomations and survival analysis with basical item: gender and age
+
+
+```{r}
+#load clinical informations
+dat=read.csv2("sc3_Training_ClinAnnotations.csv",header=T,sep=",")
+dat<-dat[,-which(apply(dat,2,function(x) all(is.na(x))))]
+
+## with gender
+dat$STATUS= ifelse(dat$HR_FLAG == 'TRUE', 1, 0)
+my.surv <- Surv(dat$D_OS,dat$STATUS) 
+kmfit1 <- survfit(my.surv~dat$D_Gender) 
+ggsurvplot(kmfit1,data = dat)
+
+#with age
+my.surv_age <- Surv(dat$D_OS,dat$STATUS==1) 
+kmfit2 <- survfit(my.surv_age~dat$D_Age) 
+ggsurvplot(kmfit2,data = dat)
+
+```
+
+It seems that the gender doesn't matter if the survival time is less than 800 days, 
+but once the patient could survival more than 800 days, female is likely to have more chance to live.
+
+Elder people is more likely to die soon or have less probabilite to live after 800 days for the people more than 65 years old.
+
+## survival analysis for each observed gene
+
+The gene are selected by the model of RandomForest and performance of public scRNAseq data
+
+Here is the list of gene that we chose:
+
+
+```{r }
+##############################  #########################
+#observer one specific gene, for example here is :
+## SNORD89  AURKAIP1  RNVU1.18   RNA5S10   RNA5S16  RNU1.1    RNA5S7  ELANE  LINC02108   RNA5S17
+df_preprocess=read.csv2(file = 'df_preprocessing_and_merged.csv',header=T,sep=",")
+df_preprocess=data.frame(df_preprocess)
+Correct_Colnames <- function(df) {
+  
+  delete.columns <- grep("(^X$)|(^X\\.)(\\d+)($)", colnames(df), perl=T)
+  
+  if (length(delete.columns) > 0) {
+    
+    row.names(df) <- as.character(df[, grep("^X$", colnames(df))])
+    #other data types might apply than character or 
+    #introduction of a new separate column might be suitable
+    
+    df <- df[,-delete.columns]
+    
+    colnames(df) <- gsub("^X", "",  colnames(df))
+    #X might be replaced by different characters, instead of being deleted
+  }
+  
+  return(df)
+}
+
+df_select=Correct_Colnames(df_preprocess)
+
+df_withoutHR=df_select[,-which(names(df_select)%in%c("HR_FLAG"))]
+
+print("transform the entrez id to gene symbol")
+TransSymbol<-function(df_select){
+  trans_df=t(df_select)
+  rank_names <- bitr(rownames(trans_df), 
+                     fromType="ENTREZID", 
+                     toType=c("SYMBOL"),
+                     OrgDb="org.Hs.eg.db")
+  expression_filter=data.frame(trans_df[rank_names$ENTREZID,])
+  expression_filter$SYMBOL=rank_names$SYMBOL
+  merge_data=merge(rank_names,expression_filter,by="SYMBOL",all=F)
+  rownames(merge_data)=make.names(merge_data$SYMBOL,unique=T)
+  data_pret=merge_data[ , -which(colnames(merge_data) %in% c("SYMBOL","ENTREZID"))]
+  df_pret=data.frame(t(data_pret))
+  return(df_pret)
+}
+df_select=TransSymbol(df_withoutHR)
+
+rownames(dat)=dat$RNASeq_geneLevelExpFileSamplId
+df_select <- mutate_all(df_select, function(x) as.numeric(as.character(x)))
+df_merge=merge(df_select,dat, by="row.names",all.x=F)
+
+```
+
+## The application of previous selected gene list 
+
+This gene list is chosen by the RandomForest and the typical biomarkers found at bibliography and then we did the observation in scRNAseq to see their distribution.
+
+The list is: AURKAIP1,ANKRD11, NCOA3, CYLD, FAM46C,PRDM1,IRF4,ACTG1,
+
+But through the previous test with our data, FAM46C doesn't exist in our case.
+
+```{r }
+my.surv <- Surv(dat$D_OS,dat$STATUS)
+gene_list=c("AURKAIP1","ANKRD11", "NCOA3", "CYLD", "PRDM1","IRF4","ACTG1")
+
+dat$AURKAIP1_group=ifelse(df_merge$AURKAIP1 > median(df_merge$AURKAIP1),'high','low')
+dat$ANKRD11_group=ifelse(df_merge$ANKRD11 > median(df_merge$ANKRD11),'high','low')
+dat$CYLD_group=ifelse(df_merge$CYLD > median(df_merge$CYLD),'high','low')
+dat$PRDM1_group=ifelse(df_merge$PRDM1 > median(df_merge$PRDM1),'high','low')
+dat$NCOA3_group=ifelse(df_merge$NCOA3 > median(df_merge$NCOA3),'high','low')
+dat$IRF4_group=ifelse(df_merge$IRF4 > median(df_merge$IRF4),'high','low')
+dat$ACTG1_group=ifelse(df_merge$ACTG1 > median(df_merge$ACTG1),'high','low')
+
+
+kmfit1 <- survfit(my.surv~AURKAIP1_group,data = dat)
+kmfit2<- survfit(my.surv~ANKRD11_group,data = dat)
+kmfit3<- survfit(my.surv~CYLD_group,data = dat)
+kmfit5<- survfit(my.surv~PRDM1_group,data = dat)
+kmfit6<- survfit(my.surv~NCOA3_group,data = dat)
+kmfit7<- survfit(my.surv~IRF4_group,data = dat)
+kmfit8<- survfit(my.surv~ACTG1_group,data = dat)
+
+ggsurvplot(kmfit1,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit2,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit3,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit5,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit6,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit7,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+ggsurvplot(kmfit8,conf.int =F, pval = T,risk.table =T, ncensor.plot = TRUE)
+
+```
+
+By observing those plots, it seems that there are AURKAIP1,ANKRD11 which are have more significant differences 
+
+## Cox Proportional-Hazards Model
+
+The math model is applied for our forest plot. 
+
+``` {r}
+################## Cox Proportional-Hazards Model #######################
+formula <- formula(paste('Surv(D_OS, STATUS)~', gene_list))
+summary(coxph(formula, data = df_merge))
+
+
+uni_cox <- function(single_gene){
+  formula <- as.formula(paste0('Surv(D_OS, STATUS)~', single_gene))
+  surv_uni_cox <- summary(coxph(formula, data = df_merge))
+  ph_hypothesis_p <- cox.zph(coxph(formula, data = df_merge))$table[1,3]
+  if (surv_uni_cox$coefficients[,5]<0.05 & ph_hypothesis_p>0.05){  #get the pvalue
+    single_cox_report <- data.frame('uni_cox_sig_genes'=single_gene,
+                                    'beta'=surv_uni_cox$coefficients[,1],
+                                    'Hazard_Ratio'=exp(surv_uni_cox$coefficients[,1]),
+                                    'z_pvalue'=surv_uni_cox$coefficients[,5],
+                                    'Wald_pvalue'=as.numeric(surv_uni_cox$waldtest[3]),
+                                    'Likelihood_pvalue'=as.numeric(surv_uni_cox$logtest[3]))
+    single_cox_report
+  }
+}
+uni_cox_list <- lapply(gene_list, uni_cox)
+candidate_gene=do.call(rbind, uni_cox_list)
+
+
+#########################  modele construit ##################
+#perform the multi-variates cox regression using qualified genes.
+formula_for_multivariate <- as.formula(paste0('Surv(D_OS, STATUS)~', paste(candidate_gene$uni_cox_sig_genes, sep = '', collapse = '+')))
+multi_variate_cox <- coxph(formula_for_multivariate, data = df_merge)
+#check if variances are supported by PH hypothesis.
+ph_hypo_multi <- cox.zph(multi_variate_cox)
+#The last row of the table records the test results on the GLOBAL model. Delete it.
+ph_hypo_table <- ph_hypo_multi$table[-nrow(ph_hypo_multi$table),]
+#Remove variances not supported by ph hypothesis and perform the 2nd regression.
+formula_for_multivariate <- as.formula(paste0('Surv(D_OS, STATUS)~', paste(rownames(ph_hypo_table)[ph_hypo_table[,3]>0.05], sep = '', collapse = '+')))
+multi_variate_cox_2 <- coxph(formula_for_multivariate, data = df_merge)
+```
+
+## Forest plot
+``` {r}
+################ forest plot #####################
+#observation of correlation of data
+correlation <- cor(df_merge[,rownames(ph_hypo_table)[ph_hypo_table[,3]>0.05]], method = 'pearson')
+ggpairs(df_merge[,rownames(ph_hypo_table)[ph_hypo_table[,3]>0.05]], 
+        axisLabels = 'show')+
+  theme_bw()+
+  theme(panel.background = element_rect(colour = 'black', size=1, fill = 'white'), 
+        panel.grid = element_blank())
+
+vif <- rms::vif(multi_variate_cox_2)
+#Some people said if the square root of VIF >2, they might be co-linear.
+sqrt(vif) < 2
+
+ggforest(model = multi_variate_cox_2, data = df_merge, main = 'Hazard ratios of candidate genes', fontsize = 1)
+
+```
